@@ -41,6 +41,11 @@ export type PitchyConfig = {
 
 export type PitchyEventCallback = ({ pitch }: { pitch: number }) => void;
 
+export type PitchySlice = {
+  audio: string;
+  duration: number;
+};
+
 const Pitchy = {
   init(config?: PitchyConfig) {
     return PitchyNativeModule.init({
@@ -55,6 +60,12 @@ const Pitchy = {
   },
   stop(): Promise<void> {
     return PitchyNativeModule.stop();
+  },
+  slice(): Promise<PitchySlice> {
+    return PitchyNativeModule.slice();
+  },
+  saveRecording(filename: string): Promise<string> {
+    return PitchyNativeModule.saveRecording(filename);
   },
   isRecording(): Promise<boolean> {
     return PitchyNativeModule.isRecording();
