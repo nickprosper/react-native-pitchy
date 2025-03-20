@@ -28,6 +28,9 @@ class PitchyModule(reactContext: ReactApplicationContext) :
 
   private var minVolume: Double = 0.0
   private var bufferSize: Int = 0
+  
+  private var sliceBuffer = mutableListOf<Short>()
+  private var fullRecordingBuffer = mutableListOf<Short>()
 
   override fun getName(): String {
     return NAME
@@ -85,17 +88,90 @@ class PitchyModule(reactContext: ReactApplicationContext) :
     stopRecording()
     promise.resolve(true)
   }
+  
+  @ReactMethod
+  fun slice(promise: Promise) {
+    synchronized(this) {
+        if (sliceBuffer.isEmpty()) {
+            val result = Arguments.createMap().apply {
+                putString("audio", "")
+                putDouble("duration", 0.0)
+            }
+            promise.resolve(result)
+            return
+        }
+        val originalSampleRate = sampleRate  // e.g. 44100
+        val requiredSamples = (2.0 * originalSampleRate).toInt()  // 2 seconds of audio
+
+        // Pad the beginning with zeros if necessary
+        val paddedSamples: List<Short> = if (sliceBuffer.size < requiredSamples) {
+            val padCount = requiredSamples - sliceBuffer.size
+            List(padCount) { 0.toShort() } + sliceBuffer
+        } else {
+            sliceBuffer.toList()
+        }
+        // Resample from originalSampleRate to 16000 Hz
+        val targetSampleRate = 16000
+        val resampledSamples = resampleShorts(paddedSamples, originalSampleRate, targetSampleRate)
+        // Convert the resampled shorts to a byte array (PCM 16-bit little-endian)
+        val pcmBytes = shortsToLittleEndianByteArray(resampledSamples)
+        // Create a WAV file with a 16 kHz sample rate, 1 channel, 16-bit PCM
+        val wavBytes = createWavFile(pcmBytes, targetSampleRate, 1, 16)
+        // Base64 encode the WAV file
+        val base64Audio = android.util.Base64.encodeToString(wavBytes, android.util.Base64.NO_WRAP)
+        val audioResult = "data:audio/wav;base64,$base64Audio"
+        // Calculate duration (in milliseconds) based on resampled samples
+        val durationMs = resampledSamples.size.toDouble() / targetSampleRate * 1000
+        // Clear the slice buffer after slicing
+        sliceBuffer.clear()
+
+        val result = Arguments.createMap().apply {
+            putString("audio", audioResult)
+            putDouble("duration", durationMs)
+        }
+        promise.resolve(result)
+    }
+  }
+  
+  @ReactMethod
+  fun saveRecording(filename: String, promise: Promise) {
+    synchronized(this) {
+        if (fullRecordingBuffer.isEmpty()) {
+            promise.reject("no_data", "No recording data available")
+            return
+        }
+        // Convert the full recording buffer (PCM 16-bit) to a byte array.
+        val pcmBytes = shortsToLittleEndianByteArray(fullRecordingBuffer)
+        // Create a WAV file using the original sample rate, 1 channel, 16-bit PCM.
+        val wavBytes = createWavFile(pcmBytes, sampleRate, 1, 16)
+        try {
+            val file = java.io.File(reactApplicationContext.filesDir, "$filename.wav")
+            file.writeBytes(wavBytes)
+            // Clear the full recording buffer after saving.
+            fullRecordingBuffer.clear()
+            promise.resolve(file.absolutePath)
+        } catch(e: Exception) {
+            promise.reject("save_error", "Failed to save recording", e)
+        }
+    }
+  }
 
   private fun startRecording(){
     audioRecord?.startRecording()
     isRecording = true
 
     recordingThread = thread(start = true) {
-      val buffer = ShortArray(bufferSize)
-      while (isRecording) {
+    val buffer = ShortArray(bufferSize)
+    while (isRecording) {
         val read = audioRecord?.read(buffer, 0, bufferSize)
         if (read != null && read > 0) {
-          detectPitch(buffer)
+            detectPitch(buffer)
+            synchronized(this) {
+                for (i in 0 until read) {
+                    sliceBuffer.add(buffer[i])
+                    fullRecordingBuffer.add(buffer[i])
+                }
+            }
         }
       }
     }
@@ -117,6 +193,56 @@ class PitchyModule(reactContext: ReactApplicationContext) :
     val params: WritableMap = Arguments.createMap()
     params.putDouble("pitch", pitch)
     reactApplicationContext.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java).emit("onPitchDetected", params)
+  }
+  
+    private fun createWavFile(pcmData: ByteArray, sampleRate: Int, channels: Int, bitsPerSample: Int): ByteArray {
+    val byteRate = sampleRate * channels * bitsPerSample / 8
+    val blockAlign = channels * bitsPerSample / 8
+    val pcmDataLength = pcmData.size
+    val chunkSize = 36 + pcmDataLength
+
+    val header = java.nio.ByteBuffer.allocate(44)
+    header.order(java.nio.ByteOrder.LITTLE_ENDIAN)
+    header.put("RIFF".toByteArray(Charsets.US_ASCII))
+    header.putInt(chunkSize)
+    header.put("WAVE".toByteArray(Charsets.US_ASCII))
+    header.put("fmt ".toByteArray(Charsets.US_ASCII))
+    header.putInt(16) // PCM subchunk size
+    header.putShort(1.toShort()) // Audio format (PCM)
+    header.putShort(channels.toShort())
+    header.putInt(sampleRate)
+    header.putInt(byteRate)
+    header.putShort(blockAlign.toShort())
+    header.putShort(bitsPerSample.toShort())
+    header.put("data".toByteArray(Charsets.US_ASCII))
+    header.putInt(pcmDataLength)
+    val headerBytes = header.array()
+
+    val wavData = ByteArray(headerBytes.size + pcmData.size)
+    System.arraycopy(headerBytes, 0, wavData, 0, headerBytes.size)
+    System.arraycopy(pcmData, 0, wavData, headerBytes.size, pcmData.size)
+    return wavData
+  }
+  
+  private fun resampleShorts(input: List<Short>, originalRate: Int, targetRate: Int): List<Short> {
+    if (originalRate == targetRate) return input
+    val ratio = originalRate.toDouble() / targetRate
+    val outputSize = (input.size / ratio).toInt()
+    val output = ArrayList<Short>(outputSize)
+    for (i in 0 until outputSize) {
+        val srcIndex = (i * ratio).toInt()
+        output.add(input.getOrElse(srcIndex) { 0 })
+    }
+    return output
+  }
+
+  private fun shortsToLittleEndianByteArray(shorts: List<Short>): ByteArray {
+    val byteBuffer = java.nio.ByteBuffer.allocate(shorts.size * 2)
+    byteBuffer.order(java.nio.ByteOrder.LITTLE_ENDIAN)
+    for (s in shorts) {
+        byteBuffer.putShort(s)
+    }
+    return byteBuffer.array()
   }
 
   companion object {
