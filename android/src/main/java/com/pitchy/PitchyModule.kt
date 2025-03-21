@@ -169,7 +169,7 @@ class PitchyModule(reactContext: ReactApplicationContext) :
             synchronized(this) {
                 for (i in 0 until read) {
                     sliceBuffer.add(buffer[i])
-                    fullRecordingBuffer.add(buffer[i])
+                    //fullRecordingBuffer.add(buffer[i])
                 }
             }
         }
