@@ -27,50 +27,54 @@ RCT_EXPORT_METHOD(init:(NSDictionary *)config) {
     #endif
     if (!isInitialized) {
         audioEngine = [[AVAudioEngine alloc] init];
-        AVAudioInputNode *inputNode = [audioEngine inputNode];
         
-        AVAudioFormat *format = [inputNode inputFormatForBus:0];
-        sampleRate = format.sampleRate;
-        minVolume = [config[@"minVolume"] doubleValue];
-
-        // Install tap on the input node to capture audio buffers.
-        // The block calls detectPitch and appends the raw audio to our buffers.
-        [inputNode installTapOnBus:0 bufferSize:[config[@"bufferSize"] unsignedIntValue] format:format block:^(AVAudioPCMBuffer * _Nonnull buffer, AVAudioTime * _Nonnull when) {
-            [self detectPitch:buffer];
-          if (self->isRecording) {
-                // Get the first channel's data (assuming mono or using the first channel)
-                float *channelData = buffer.floatChannelData[0];
-                NSUInteger length = buffer.frameLength * sizeof(float);
-                NSData *data = [NSData dataWithBytes:channelData length:length];
-                
-                // Initialize the buffers if needed
-              if (!self->audioBuffer) {
-                self->audioBuffer = [NSMutableData data];
-                }
-            if (!self->fullRecording) {
-              self->fullRecording = [NSMutableData data];
-                }
-                // Append raw data to both buffers
-            [self->audioBuffer appendData:data];
-            [self->fullRecording appendData:data];
-            }
-        }];
-
-        // Configure the audio session.
+        // Configure the audio session first.
         AVAudioSession *session = [AVAudioSession sharedInstance];
         NSError *error = nil;
         [session setCategory:AVAudioSessionCategoryPlayAndRecord
-                        mode:AVAudioSessionModeMeasurement
-                     options:AVAudioSessionCategoryOptionDefaultToSpeaker
-                       error:&error];
+                     mode:AVAudioSessionModeMeasurement
+                  options:AVAudioSessionCategoryOptionDefaultToSpeaker
+                    error:&error];
         if (error) {
             RCTLogError(@"Error setting AVAudioSession category: %@", error);
         }
-        
+        [session setPreferredSampleRate:44100 error:&error];
+        if (error) {
+            RCTLogError(@"Error setting preferred sample rate: %@", error);
+        }
         [session setActive:YES error:&error];
         if (error) {
             RCTLogError(@"Error activating AVAudioSession: %@", error);
         }
+        
+        // Now that the session is active, get the input format.
+        AVAudioInputNode *inputNode = [audioEngine inputNode];
+        AVAudioFormat *format = [inputNode inputFormatForBus:0];
+        sampleRate = format.sampleRate;
+        if (sampleRate <= 0) {
+            sampleRate = 44100;
+        }
+        RCTLogInfo(@"Input format sampleRate: %f, channelCount: %u", format.sampleRate, (unsigned int)format.channelCount);
+        
+        minVolume = [config[@"minVolume"] doubleValue];
+
+        // Install tap on the input node to capture audio buffers.
+        [inputNode installTapOnBus:0 bufferSize:[config[@"bufferSize"] unsignedIntValue] format:format block:^(AVAudioPCMBuffer * _Nonnull buffer, AVAudioTime * _Nonnull when) {
+            [self detectPitch:buffer];
+          if (self->isRecording) {
+                float *channelData = buffer.floatChannelData[0];
+                NSUInteger length = buffer.frameLength * sizeof(float);
+                NSData *data = [NSData dataWithBytes:channelData length:length];
+            if (!self->audioBuffer) {
+              self->audioBuffer = [NSMutableData data];
+                }
+            if (!self->fullRecording) {
+              self->fullRecording = [NSMutableData data];
+                }
+            [self->audioBuffer appendData:data];
+            [self->fullRecording appendData:data];
+            }
+        }];
 
         isInitialized = YES;
     }
