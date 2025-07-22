@@ -1,84 +1,111 @@
 #import "Pitchy.h"
 #import <AVFoundation/AVFoundation.h>
 #import <React/RCTLog.h>
+#import <vector>
 
 @implementation Pitchy {
     AVAudioEngine *audioEngine;
     double sampleRate;
     double minVolume;
+
+    // State flags
     BOOL isRecording;
     BOOL isInitialized;
-    // Buffer to accumulate audio data between slices
-    NSMutableData *audioBuffer;
-    // Buffer to store the full recording data for the session
-    NSMutableData *fullRecording;
+    BOOL recordFullAudio;   // opt-in full-session capture
+    BOOL isPaused;          // soft pause without tearing down the engine
+
+    // Buffers
+    NSMutableData *audioBuffer;   // float32 slice buffer (always kept)
+    NSMutableData *fullRecording; // optional session-long int16 PCM
 }
 
 RCT_EXPORT_MODULE()
 
 - (NSArray<NSString *> *)supportedEvents {
-  return @[@"onPitchDetected"];
+    return @[@"onPitchDetected"];
 }
 
+#pragma mark - Initialisation
+
 RCT_EXPORT_METHOD(init:(NSDictionary *)config) {
-    #if TARGET_IPHONE_SIMULATOR
-        RCTLogInfo(@"Pitchy module is not supported on the iOS simulator");
-        return;
-    #endif
+#if TARGET_IPHONE_SIMULATOR
+    RCTLogInfo(@"Pitchy module is not supported on the iOS simulator");
+    return;
+#endif
+
     if (!isInitialized) {
         audioEngine = [[AVAudioEngine alloc] init];
-        
-        // Configure the audio session first.
+
+        /* ---------- AVAudioSession ---------- */
         AVAudioSession *session = [AVAudioSession sharedInstance];
         NSError *error = nil;
+
         [session setCategory:AVAudioSessionCategoryPlayAndRecord
-                     mode:AVAudioSessionModeMeasurement
-                  options:AVAudioSessionCategoryOptionDefaultToSpeaker
-                    error:&error];
-        if (error) {
-            RCTLogError(@"Error setting AVAudioSession category: %@", error);
-        }
+                       mode:AVAudioSessionModeMeasurement
+                    options:AVAudioSessionCategoryOptionDefaultToSpeaker
+                      error:&error];
+        if (error) RCTLogError(@"Error setting AVAudioSession category: %@", error);
+
         [session setPreferredSampleRate:44100 error:&error];
-        if (error) {
-            RCTLogError(@"Error setting preferred sample rate: %@", error);
-        }
+        if (error) RCTLogError(@"Error setting preferred sample rate: %@", error);
+
         [session setActive:YES error:&error];
-        if (error) {
-            RCTLogError(@"Error activating AVAudioSession: %@", error);
-        }
-        
-        // Now that the session is active, get the input format.
+        if (error) RCTLogError(@"Error activating AVAudioSession: %@", error);
+
+        /* ---------- Input format ---------- */
         AVAudioInputNode *inputNode = [audioEngine inputNode];
         AVAudioFormat *format = [inputNode inputFormatForBus:0];
-        sampleRate = format.sampleRate;
-        if (sampleRate <= 0) {
-            sampleRate = 44100;
-        }
-        RCTLogInfo(@"Input format sampleRate: %f, channelCount: %u", format.sampleRate, (unsigned int)format.channelCount);
-        
-        minVolume = [config[@"minVolume"] doubleValue];
 
-        // Install tap on the input node to capture audio buffers.
-        [inputNode installTapOnBus:0 bufferSize:[config[@"bufferSize"] unsignedIntValue] format:format block:^(AVAudioPCMBuffer * _Nonnull buffer, AVAudioTime * _Nonnull when) {
+        sampleRate = format.sampleRate > 0 ? format.sampleRate : 44100;
+        RCTLogInfo(@"Input format sampleRate: %f, channelCount: %u",
+                   format.sampleRate, (unsigned int)format.channelCount);
+
+        /* ---------- Params from JS ---------- */
+        minVolume       = [config[@"minVolume"]       doubleValue];
+        recordFullAudio = [config[@"recordFullAudio"] boolValue];
+        isPaused        = NO;
+
+        /* ---------- Tap for pitch + capture ---------- */
+        [inputNode installTapOnBus:0
+                        bufferSize:[config[@"bufferSize"] unsignedIntValue]
+                            format:format
+                             block:^(AVAudioPCMBuffer * _Nonnull buffer,
+                                     AVAudioTime * _Nonnull when) {
             [self detectPitch:buffer];
-          if (self->isRecording) {
+
+            if (self->isRecording && !self->isPaused) {
                 float *channelData = buffer.floatChannelData[0];
-                NSUInteger length = buffer.frameLength * sizeof(float);
-                NSData *data = [NSData dataWithBytes:channelData length:length];
-            if (!self->audioBuffer) {
-              self->audioBuffer = [NSMutableData data];
+                AVAudioFrameCount frames = buffer.frameLength;
+
+                /* ---- slice buffer (float32) ---- */
+                NSData *slice = [NSData dataWithBytes:channelData
+                                               length:frames * sizeof(float)];
+                if (!self->audioBuffer) self->audioBuffer = [NSMutableData data];
+                [self->audioBuffer appendData:slice];
+
+                /* ---- optional full recording (int16) ---- */
+                if (self->recordFullAudio) {
+                    if (!self->fullRecording) self->fullRecording = [NSMutableData data];
+
+                    NSMutableData *pcmBlock =
+                        [NSMutableData dataWithLength:frames * sizeof(int16_t)];
+                    int16_t *dst = (int16_t *)pcmBlock.mutableBytes;
+                    for (NSUInteger i = 0; i < frames; i++) {
+                        float s = channelData[i];
+                        if (s > 1.0f)  s = 1.0f;
+                        if (s < -1.0f) s = -1.0f;
+                        dst[i] = (int16_t)(s * 32767);
+                    }
+                    [self->fullRecording appendData:pcmBlock];
                 }
-            if (!self->fullRecording) {
-              self->fullRecording = [NSMutableData data];
-                }
-            [self->audioBuffer appendData:data];
-            [self->fullRecording appendData:data];
             }
         }];
 
         isInitialized = YES;
     }
 }
+
+#pragma mark - Recording control
 
 RCT_EXPORT_METHOD(isRecording:(RCTPromiseResolveBlock)resolve
                   reject:(RCTPromiseRejectBlock)reject) {
@@ -91,15 +118,14 @@ RCT_EXPORT_METHOD(start:(RCTPromiseResolveBlock)resolve
         reject(@"not_initialized", @"Pitchy module is not initialized", nil);
         return;
     }
-
     if (isRecording) {
         reject(@"already_recording", @"Already recording", nil);
         return;
     }
-    
-    // Reset the buffers for a new recording session.
-    audioBuffer = [NSMutableData data];
+
+    audioBuffer   = [NSMutableData data];
     fullRecording = [NSMutableData data];
+    isPaused      = NO;
 
     NSError *error = nil;
     [audioEngine startAndReturnError:&error];
@@ -120,39 +146,49 @@ RCT_EXPORT_METHOD(stop:(RCTPromiseResolveBlock)resolve
 
     [audioEngine stop];
     isRecording = NO;
-    
-    // Clear the audio buffers after stopping the recording session.
-    if (audioBuffer) {
-        [audioBuffer setLength:0];
-    }
-    if (fullRecording) {
-        [fullRecording setLength:0];
-    }
-    
+
+    if (audioBuffer)   [audioBuffer   setLength:0];
+    if (fullRecording) [fullRecording setLength:0];
+
     resolve(@(YES));
 }
 
+RCT_EXPORT_METHOD(pause:(RCTPromiseResolveBlock)resolve
+                  reject:(RCTPromiseRejectBlock)reject) {
+    if (!isRecording) {
+        reject(@"not_recording", @"Not recording", nil);
+        return;
+    }
+    isPaused = YES;
+    resolve(@(YES));
+}
+
+RCT_EXPORT_METHOD(resume:(RCTPromiseResolveBlock)resolve
+                  reject:(RCTPromiseRejectBlock)reject) {
+    if (!isRecording) {
+        reject(@"not_recording", @"Not recording", nil);
+        return;
+    }
+    isPaused = NO;
+    resolve(@(YES));
+}
+
+#pragma mark - Pitch detection
+
 - (void)detectPitch:(AVAudioPCMBuffer *)buffer {
-    // Dispatch the pitch detection work on a background queue with a defined QoS.
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INTERACTIVE, 0), ^{
         float *channelData = buffer.floatChannelData[0];
         std::vector<double> buf(channelData, channelData + buffer.frameLength);
-        
-      double detectedPitch = pitchy::autoCorrelate(buf, self->sampleRate, self->minVolume);
-        // Optionally log the detected pitch (for debugging)
-        //RCTLogInfo(@"Detected Pitch %f", detectedPitch);
-        
-        // Now dispatch the event sending on the main thread.
+
+        double pitch = pitchy::autoCorrelate(buf, self->sampleRate, self->minVolume);
+
         dispatch_async(dispatch_get_main_queue(), ^{
-            [self sendEventWithName:@"onPitchDetected" body:@{@"pitch": @(detectedPitch)}];
+            [self sendEventWithName:@"onPitchDetected" body:@{ @"pitch": @(pitch) }];
         });
     });
 }
 
-// New method to slice the current recording buffer.
-// This returns the raw audio data collected since the last slice call as a base64 encoded WAV file.
-// It ensures that the resulting audio is at least 2 seconds long by padding the start with zeros if needed,
-// resamples the audio to 16 kHz mono, and calculates the duration (in milliseconds) of the resulting audio.
+
 RCT_EXPORT_METHOD(slice:(RCTPromiseResolveBlock)resolve
                   reject:(RCTPromiseRejectBlock)reject) {
     if (!audioBuffer || audioBuffer.length == 0) {
@@ -286,6 +322,7 @@ RCT_EXPORT_METHOD(slice:(RCTPromiseResolveBlock)resolve
     resolve(@{ @"audio": audioResult, @"duration": @(durationMs) });
 }
 
+
 RCT_EXPORT_METHOD(saveRecording:(NSString *)uuid
                   resolver:(RCTPromiseResolveBlock)resolve
                   rejecter:(RCTPromiseRejectBlock)reject) {
@@ -293,57 +330,46 @@ RCT_EXPORT_METHOD(saveRecording:(NSString *)uuid
         reject(@"no_data", @"No recording data available", nil);
         return;
     }
-    
-    // Convert the accumulated float audio data to PCM int16
-    NSUInteger floatCount = fullRecording.length / sizeof(float);
-    const float *floatSamples = (const float *)fullRecording.bytes;
-    NSMutableData *pcmData = [NSMutableData dataWithLength:floatCount * sizeof(int16_t)];
-    int16_t *pcmSamples = (int16_t *)pcmData.mutableBytes;
-    for (NSUInteger i = 0; i < floatCount; i++) {
-        float sample = floatSamples[i];
-        if (sample > 1.0) sample = 1.0;
-        if (sample < -1.0) sample = -1.0;
-        pcmSamples[i] = (int16_t)(sample * 32767);
-    }
-    
-    // Create a WAV header for PCM int16 format
-    uint32_t pcmDataLength = (uint32_t)pcmData.length;
-    uint32_t sampleRateInt = (uint32_t)sampleRate;
-    uint16_t channels = 1;
-    uint16_t bitsPerSample = 16;
-    uint32_t byteRate = sampleRateInt * channels * bitsPerSample / 8;
-    uint16_t blockAlign = channels * bitsPerSample / 8;
-    uint32_t chunkSize = 36 + pcmDataLength;
-    
-    NSMutableData *wavData = [NSMutableData dataWithCapacity:(44 + pcmDataLength)];
-    [wavData appendBytes:"RIFF" length:4];
-    [wavData appendBytes:&chunkSize length:4];
-    [wavData appendBytes:"WAVE" length:4];
-    [wavData appendBytes:"fmt " length:4];
-    uint32_t subchunk1Size = 16;
-    [wavData appendBytes:&subchunk1Size length:4];
-    uint16_t audioFormat = 1; // PCM
-    [wavData appendBytes:&audioFormat length:2];
-    [wavData appendBytes:&channels length:2];
-    [wavData appendBytes:&sampleRateInt length:4];
-    [wavData appendBytes:&byteRate length:4];
-    [wavData appendBytes:&blockAlign length:2];
-    [wavData appendBytes:&bitsPerSample length:2];
-    [wavData appendBytes:"data" length:4];
-    [wavData appendBytes:&pcmDataLength length:4];
-    
-    // Append the PCM data
-    [wavData appendData:pcmData];
-    
-    // Write the wavData to a file in the app's Documents directory with a .wav extension
-    NSArray *paths = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
-    NSString *documentsDirectory = [paths firstObject];
-    NSString *filePath = [documentsDirectory stringByAppendingPathComponent:[NSString stringWithFormat:@"%@.wav", uuid]];
-    
-    BOOL success = [wavData writeToFile:filePath atomically:YES];
-    if (success) {
-        // Clear the full recording buffer after a successful save.
-        [fullRecording setLength:0];
+
+    NSMutableData *pcmData = [NSMutableData dataWithData:fullRecording];
+
+    /* ---- WAV header ---- */
+    uint32_t pcmLen       = (uint32_t)pcmData.length;
+    uint32_t sr           = (uint32_t)sampleRate;
+    uint16_t channels     = 1;
+    uint16_t bitsPerSample= 16;
+    uint32_t byteRate     = sr * channels * bitsPerSample / 8;
+    uint16_t blockAlign   = channels * bitsPerSample / 8;
+    uint32_t chunkSize    = 36 + pcmLen;
+
+    NSMutableData *wav = [NSMutableData dataWithCapacity:(44 + pcmLen)];
+    [wav appendBytes:"RIFF" length:4];
+    [wav appendBytes:&chunkSize length:4];
+    [wav appendBytes:"WAVE" length:4];
+    [wav appendBytes:"fmt " length:4];
+    uint32_t subchunk1 = 16;
+    [wav appendBytes:&subchunk1 length:4];
+    uint16_t audioFmt = 1;
+    [wav appendBytes:&audioFmt length:2];
+    [wav appendBytes:&channels length:2];
+    [wav appendBytes:&sr length:4];
+    [wav appendBytes:&byteRate length:4];
+    [wav appendBytes:&blockAlign length:2];
+    [wav appendBytes:&bitsPerSample length:2];
+    [wav appendBytes:"data" length:4];
+    [wav appendBytes:&pcmLen length:4];
+    [wav appendData:pcmData];
+
+    /* ---- File path ---- */
+    NSArray  *paths   = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory,
+                                                            NSUserDomainMask, YES);
+    NSString *dir     = [paths firstObject];
+    NSString *filePath= [dir stringByAppendingPathComponent:
+                         [NSString stringWithFormat:@"%@.wav", uuid]];
+
+    BOOL ok = [wav writeToFile:filePath atomically:YES];
+    if (ok) {
+        [fullRecording setLength:0];  // clear for next session
         resolve(filePath);
     } else {
         reject(@"save_error", @"Failed to save recording", nil);
