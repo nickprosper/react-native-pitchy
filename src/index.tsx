@@ -37,6 +37,8 @@ export type PitchyConfig = {
    * @default 'ACF2+'
    */
   algorithm?: PitchyAlgorithm;
+
+  recordFullAudio?: boolean;
 };
 
 export type PitchyEventCallback = ({ pitch }: { pitch: number }) => void;
@@ -52,6 +54,7 @@ const Pitchy = {
       bufferSize: 4096,
       minVolume: -60,
       algorithm: 'ACF2+',
+      recordFullAudio: false,
       ...config,
     });
   },
@@ -69,6 +72,12 @@ const Pitchy = {
   },
   isRecording(): Promise<boolean> {
     return PitchyNativeModule.isRecording();
+  },
+  pause(): Promise<void> {
+    return PitchyNativeModule.pause();
+  },
+  resume(): Promise<void> {
+    return PitchyNativeModule.resume();
   },
   addListener(callback: PitchyEventCallback) {
     return eventEmitter.addListener('onPitchDetected', callback);

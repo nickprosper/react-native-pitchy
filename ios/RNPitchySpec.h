@@ -23,6 +23,18 @@
        reject:(RCTPromiseRejectBlock)reject;
 
 /**
+ * Pauses the pitch detection / recording
+ */
+- (void)pause:(RCTPromiseResolveBlock)resolve
+       reject:(RCTPromiseRejectBlock)reject;
+
+/**
+ * Resumes the pitch detection / recording after a pause
+ */
+- (void)resume:(RCTPromiseResolveBlock)resolve
+       reject:(RCTPromiseRejectBlock)reject;
+
+/**
  * Stop pitch detection.
  */
 - (void)stop:(RCTPromiseResolveBlock)resolve
