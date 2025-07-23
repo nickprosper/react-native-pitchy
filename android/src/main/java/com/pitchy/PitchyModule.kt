@@ -1,12 +1,6 @@
 package com.pitchy
 
-import com.facebook.react.bridge.ReactApplicationContext
-import com.facebook.react.bridge.ReactContextBaseJavaModule
-import com.facebook.react.bridge.ReactMethod
-import com.facebook.react.bridge.Promise
-import com.facebook.react.bridge.ReadableMap
-import com.facebook.react.bridge.Arguments
-import com.facebook.react.bridge.WritableMap
+import com.facebook.react.bridge.*
 import com.facebook.react.modules.core.DeviceEventManagerModule
 
 import android.media.AudioRecord
@@ -20,15 +14,16 @@ class PitchyModule(reactContext: ReactApplicationContext) :
 
   private var isRecording = false
   private var isInitialized = false
- 
+  private var isPaused = false
+  private var recordFullAudio = false
+
   private var audioRecord: AudioRecord? = null
   private var recordingThread: Thread? = null
-  
-  private var sampleRate: Int = 44100
 
+  private var sampleRate: Int = 44100
   private var minVolume: Double = 0.0
   private var bufferSize: Int = 0
-  
+
   private var sliceBuffer = mutableListOf<Short>()
   private var fullRecordingBuffer = mutableListOf<Short>()
 
@@ -40,8 +35,14 @@ class PitchyModule(reactContext: ReactApplicationContext) :
   fun init(config: ReadableMap) {
       minVolume = config.getDouble("minVolume")
       bufferSize = config.getInt("bufferSize")
+      recordFullAudio = if (config.hasKey("recordFullAudio")) config.getBoolean("recordFullAudio") else false
 
-      audioRecord = AudioRecord(MediaRecorder.AudioSource.MIC, sampleRate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, bufferSize)
+      audioRecord = AudioRecord(
+       MediaRecorder.AudioSource.MIC,
+       sampleRate,
+       AudioFormat.CHANNEL_IN_MONO,
+       AudioFormat.ENCODING_PCM_16BIT,
+       bufferSize)
 
       isInitialized = true
   }
@@ -74,8 +75,33 @@ class PitchyModule(reactContext: ReactApplicationContext) :
       return
     }
 
+    sliceBuffer.clear()
+    fullRecordingBuffer.clear()
+    isPaused = false
+
     startRecording()
     promise.resolve(true)
+  }
+
+  @ReactMethod
+  fun pause(promise: Promise) {
+      if (!isRecording) {
+        promise.reject("E_NOT_RECORDING", "Not recording");
+        return
+      }
+
+      isPaused = true
+      promise.resolve(true)
+  }
+
+  @ReactMethod
+  fun resume(promise: Promise) {
+      if (!isRecording) {
+        promise.reject("E_NOT_RECORDING", "Not recording");
+        return
+      }
+      isPaused = false
+      promise.resolve(true)
   }
 
   @ReactMethod
@@ -88,7 +114,7 @@ class PitchyModule(reactContext: ReactApplicationContext) :
     stopRecording()
     promise.resolve(true)
   }
-  
+
   @ReactMethod
   fun slice(promise: Promise) {
     synchronized(this) {
@@ -132,7 +158,7 @@ class PitchyModule(reactContext: ReactApplicationContext) :
         promise.resolve(result)
     }
   }
-  
+
   @ReactMethod
   fun saveRecording(filename: String, promise: Promise) {
     synchronized(this) {
@@ -165,11 +191,17 @@ class PitchyModule(reactContext: ReactApplicationContext) :
     while (isRecording) {
         val read = audioRecord?.read(buffer, 0, bufferSize)
         if (read != null && read > 0) {
-            detectPitch(buffer)
-            synchronized(this) {
-                for (i in 0 until read) {
-                    sliceBuffer.add(buffer[i])
-                    //fullRecordingBuffer.add(buffer[i])
+            detectPitch(buffer.copyOfRange(0, read))
+
+            if (!isPaused) {
+                synchronized(this) {
+                    for (i in 0 until read) {
+                        sliceBuffer.add(buffer[i])
+
+                        if (recordFullAudio) {
+                          fullRecordingBuffer.add(buffer[i])
+                        }
+                    }
                 }
             }
         }
@@ -179,11 +211,14 @@ class PitchyModule(reactContext: ReactApplicationContext) :
 
   private fun stopRecording() {
     isRecording = false
-    audioRecord?.stop()
-    audioRecord?.release()
+    audioRecord?.apply {
+        stop()
+        release()
+    }
     audioRecord = null
     recordingThread?.interrupt()
     recordingThread = null
+    isPaused = false
   }
 
   private external fun nativeAutoCorrelate(buffer: ShortArray, sampleRate: Int, minVolume: Double): Double
@@ -194,7 +229,7 @@ class PitchyModule(reactContext: ReactApplicationContext) :
     params.putDouble("pitch", pitch)
     reactApplicationContext.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java).emit("onPitchDetected", params)
   }
-  
+
     private fun createWavFile(pcmData: ByteArray, sampleRate: Int, channels: Int, bitsPerSample: Int): ByteArray {
     val byteRate = sampleRate * channels * bitsPerSample / 8
     val blockAlign = channels * bitsPerSample / 8
@@ -223,7 +258,7 @@ class PitchyModule(reactContext: ReactApplicationContext) :
     System.arraycopy(pcmData, 0, wavData, headerBytes.size, pcmData.size)
     return wavData
   }
-  
+
   private fun resampleShorts(input: List<Short>, originalRate: Int, targetRate: Int): List<Short> {
     if (originalRate == targetRate) return input
     val ratio = originalRate.toDouble() / targetRate
