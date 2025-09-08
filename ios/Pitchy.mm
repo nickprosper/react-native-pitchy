@@ -376,4 +376,70 @@ RCT_EXPORT_METHOD(saveRecording:(NSString *)uuid
     }
 }
 
+// New API with options for future formats (e.g., mp3). Currently falls back to WAV.
+RCT_EXPORT_METHOD(saveRecordingWithOptions:(NSString *)uuid
+                  options:(NSDictionary *)options
+                  resolver:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject)
+{
+    NSString *format = [options objectForKey:@"format"];
+    if (format && [[format lowercaseString] isEqualToString:@"aac"]) {
+        // Encode to AAC (m4a container) using AVAudioFile
+        if (!fullRecording || fullRecording.length == 0) {
+            reject(@"no_data", @"No recording data available", nil);
+            return;
+        }
+
+        @try {
+            // Prepare PCM float buffer from int16 data
+            NSUInteger sampleCount = fullRecording.length / sizeof(int16_t);
+            AVAudioFormat *pcmFmt = [[AVAudioFormat alloc] initWithCommonFormat:AVAudioPCMFormatFloat32
+                                                                      sampleRate:sampleRate
+                                                                        channels:1
+                                                                     interleaved:NO];
+            AVAudioPCMBuffer *pcmBuf = [[AVAudioPCMBuffer alloc] initWithPCMFormat:pcmFmt
+                                                                     frameCapacity:(AVAudioFrameCount)sampleCount];
+            pcmBuf.frameLength = (AVAudioFrameCount)sampleCount;
+
+            const int16_t *src = (const int16_t *)fullRecording.bytes;
+            float *dst = pcmBuf.floatChannelData[0];
+            for (NSUInteger i = 0; i < sampleCount; i++) {
+                dst[i] = (float)src[i] / 32767.0f;
+            }
+
+            // AAC settings
+            NSDictionary *settings = @{
+                AVFormatIDKey: @(kAudioFormatMPEG4AAC),
+                AVSampleRateKey: @(sampleRate),
+                AVNumberOfChannelsKey: @1,
+                AVEncoderBitRateKey: @96000
+            };
+
+            NSArray *paths = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
+            NSString *dir = [paths firstObject];
+            NSString *filePath = [dir stringByAppendingPathComponent:[NSString stringWithFormat:@"%@.m4a", uuid]];
+            NSURL *url = [NSURL fileURLWithPath:filePath];
+
+            NSError *err = nil;
+            AVAudioFile *file = [[AVAudioFile alloc] initForWriting:url settings:settings error:&err];
+            if (err) {
+                reject(@"aac_create_error", @"Failed to create AAC file", err);
+                return;
+            }
+            if (![file writeFromBuffer:pcmBuf error:&err]) {
+                reject(@"aac_write_error", @"Failed to write AAC data", err);
+                return;
+            }
+            [fullRecording setLength:0];
+            resolve(filePath);
+            return;
+        } @catch (NSException *ex) {
+            reject(@"aac_exception", ex.reason, nil);
+            return;
+        }
+    }
+    // Default: WAV
+    [self saveRecording:uuid resolver:resolve rejecter:reject];
+}
+
 @end
