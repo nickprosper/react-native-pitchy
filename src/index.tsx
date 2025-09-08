@@ -67,7 +67,7 @@ const Pitchy = {
   slice(): Promise<PitchySlice> {
     return PitchyNativeModule.slice();
   },
-  saveRecording(filename: string, options?: { format?: 'wav' | 'mp3' }): Promise<string> {
+  saveRecording(filename: string, options?: { format?: 'wav' | 'mp3' | 'aac' }): Promise<string> {
     // Prefer the new method with options if available
     if (typeof (PitchyNativeModule as any).saveRecordingWithOptions === 'function') {
       return (PitchyNativeModule as any).saveRecordingWithOptions(filename, options ?? {});
