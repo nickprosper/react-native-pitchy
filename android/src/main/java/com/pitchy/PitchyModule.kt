@@ -6,6 +6,10 @@ import com.facebook.react.modules.core.DeviceEventManagerModule
 import android.media.AudioRecord
 import android.media.AudioFormat
 import android.media.MediaRecorder
+import android.media.MediaCodec
+import android.media.MediaFormat
+import android.media.MediaCodecInfo
+import android.media.MediaMuxer
 
 import kotlin.concurrent.thread
 
