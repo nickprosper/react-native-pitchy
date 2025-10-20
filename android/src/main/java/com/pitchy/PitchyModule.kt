@@ -6,6 +6,10 @@ import com.facebook.react.modules.core.DeviceEventManagerModule
 import android.media.AudioRecord
 import android.media.AudioFormat
 import android.media.MediaRecorder
+import android.media.MediaCodec
+import android.media.MediaFormat
+import android.media.MediaCodecInfo
+import android.media.MediaMuxer
 
 import kotlin.concurrent.thread
 
@@ -161,6 +165,20 @@ class PitchyModule(reactContext: ReactApplicationContext) :
 
   @ReactMethod
   fun saveRecording(filename: String, promise: Promise) {
+    // Backwards-compat: default WAV save
+    saveRecordingWav(filename, promise)
+  }
+
+  @ReactMethod
+  fun saveRecordingWithOptions(filename: String, options: ReadableMap, promise: Promise) {
+    val format = if (options.hasKey("format")) options.getString("format") else "wav"
+    when (format?.lowercase()) {
+      "aac" -> saveRecordingAac(filename, promise)
+      else -> saveRecordingWav(filename, promise)
+    }
+  }
+
+  private fun saveRecordingWav(filename: String, promise: Promise) {
     synchronized(this) {
         if (fullRecordingBuffer.isEmpty()) {
             promise.reject("no_data", "No recording data available")
@@ -284,6 +302,95 @@ class PitchyModule(reactContext: ReactApplicationContext) :
     const val NAME = "Pitchy"
     init {
       System.loadLibrary("react-native-pitchy")
+    }
+  }
+
+
+  private fun saveRecordingAac(filename: String, promise: Promise) {
+    synchronized(this) {
+      if (fullRecordingBuffer.isEmpty()) {
+        promise.reject("no_data", "No recording data available")
+        return
+      }
+      try {
+        val mime = "audio/mp4a-latm"
+        val bitRate = 96000
+        val channelCount = 1
+        val sampleRateHz = sampleRate
+
+        val codec = MediaCodec.createEncoderByType(mime)
+        val format = MediaFormat.createAudioFormat(mime, sampleRateHz, channelCount)
+        format.setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC)
+        format.setInteger(MediaFormat.KEY_BIT_RATE, bitRate)
+
+        codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+        codec.start()
+
+        val outputFile = java.io.File(reactApplicationContext.filesDir, "$filename.m4a")
+        val muxer = MediaMuxer(outputFile.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+        var trackIndex = -1
+        var muxerStarted = false
+
+        val inputData = java.nio.ByteBuffer.allocateDirect(fullRecordingBuffer.size * 2)
+        inputData.order(java.nio.ByteOrder.LITTLE_ENDIAN)
+        for (s in fullRecordingBuffer) inputData.putShort(s)
+        inputData.flip()
+
+        var presentationTimeUs = 0L
+        val bytesPerSample = 2
+        val frameSamples = 1024 // AAC frame
+        val frameBytes = frameSamples * bytesPerSample
+
+        var eos = false
+        val bufferInfo = MediaCodec.BufferInfo()
+        while (!eos) {
+          val inIndex = codec.dequeueInputBuffer(10000)
+          if (inIndex >= 0) {
+            val inBuf = codec.getInputBuffer(inIndex)!!
+            inBuf.clear()
+            val remaining = inputData.remaining()
+            val toWrite = kotlin.math.min(remaining, frameBytes)
+            if (toWrite > 0) {
+              val temp = ByteArray(toWrite)
+              inputData.get(temp)
+              inBuf.put(temp)
+              val ptsUs = presentationTimeUs
+              presentationTimeUs += (1_000_000L * (toWrite / bytesPerSample)) / sampleRateHz
+              codec.queueInputBuffer(inIndex, 0, toWrite, ptsUs, 0)
+            } else {
+              codec.queueInputBuffer(inIndex, 0, 0, presentationTimeUs, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+              eos = true
+            }
+          }
+
+          var outIndex = codec.dequeueOutputBuffer(bufferInfo, 10000)
+          while (outIndex >= 0) {
+            val outBuf = codec.getOutputBuffer(outIndex)!!
+            if (!muxerStarted) {
+              val outFormat = codec.outputFormat
+              trackIndex = muxer.addTrack(outFormat)
+              muxer.start()
+              muxerStarted = true
+            }
+            if (bufferInfo.size > 0 && muxerStarted) {
+              outBuf.position(bufferInfo.offset)
+              outBuf.limit(bufferInfo.offset + bufferInfo.size)
+              muxer.writeSampleData(trackIndex, outBuf, bufferInfo)
+            }
+            codec.releaseOutputBuffer(outIndex, false)
+            if ((bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) break
+            outIndex = codec.dequeueOutputBuffer(bufferInfo, 0)
+          }
+        }
+
+        codec.stop(); codec.release()
+        if (muxerStarted) muxer.stop()
+        muxer.release()
+        fullRecordingBuffer.clear()
+        promise.resolve(outputFile.absolutePath)
+      } catch (e: Exception) {
+        promise.reject("aac_save_error", "Failed to save AAC recording", e)
+      }
     }
   }
 }
