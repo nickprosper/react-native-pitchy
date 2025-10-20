@@ -7,6 +7,7 @@
     AVAudioEngine *audioEngine;
     double sampleRate;
     double minVolume;
+    BOOL useVoiceProcessing;
 
     // State flags
     BOOL isRecording;
@@ -40,14 +41,40 @@ RCT_EXPORT_METHOD(init:(NSDictionary *)config) {
         AVAudioSession *session = [AVAudioSession sharedInstance];
         NSError *error = nil;
 
-        [session setCategory:AVAudioSessionCategoryPlayAndRecord
-                       mode:AVAudioSessionModeMeasurement
-                    options:AVAudioSessionCategoryOptionDefaultToSpeaker
-                      error:&error];
-        if (error) RCTLogError(@"Error setting AVAudioSession category: %@", error);
+        useVoiceProcessing = [config[@"useVoiceProcessing"] boolValue];
 
-        [session setPreferredSampleRate:44100 error:&error];
-        if (error) RCTLogError(@"Error setting preferred sample rate: %@", error);
+        AVAudioSessionCategoryOptions options = AVAudioSessionCategoryOptionDefaultToSpeaker;
+        NSString *sessionMode = useVoiceProcessing ? AVAudioSessionModeVoiceChat : AVAudioSessionModeMeasurement;
+
+        [session setCategory:AVAudioSessionCategoryPlayAndRecord
+                       mode:sessionMode
+                    options:options
+                      error:&error];
+        if (error) {
+            RCTLogError(@"Error setting AVAudioSession category/mode: %@", error);
+        }
+
+        if (useVoiceProcessing) {
+            if ([session respondsToSelector:@selector(setPreferredInputNumberOfChannels:error:)]) {
+                NSError *prefError = nil;
+                [session setPreferredInputNumberOfChannels:1 error:&prefError];
+                if (prefError) {
+                    RCTLogWarn(@"Pitchy: Unable to prefer mono input: %@", prefError);
+                }
+            }
+        }
+
+        double preferredSampleRate = useVoiceProcessing ? 48000 : 44100;
+        [session setPreferredSampleRate:preferredSampleRate error:&error];
+        if (error) {
+            RCTLogError(@"Error setting preferred sample rate: %@", error);
+        }
+
+        [session setPreferredIOBufferDuration:0.005 error:&error];
+        if (error) {
+            RCTLogWarn(@"Pitchy: Unable to set IO buffer duration: %@", error);
+        }
+        error = nil;
 
         [session setActive:YES error:&error];
         if (error) RCTLogError(@"Error activating AVAudioSession: %@", error);
