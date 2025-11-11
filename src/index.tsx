@@ -39,6 +39,12 @@ export type PitchyConfig = {
   algorithm?: PitchyAlgorithm;
 
   recordFullAudio?: boolean;
+  /**
+   * Enable Apple's built-in voice processing, which applies acoustic echo cancellation
+   * and noise suppression to the microphone feed.
+   * @default false
+   */
+  useVoiceProcessing?: boolean;
 };
 
 export type PitchyEventCallback = ({ pitch }: { pitch: number }) => void;
@@ -55,6 +61,7 @@ const Pitchy = {
       minVolume: -60,
       algorithm: 'ACF2+',
       recordFullAudio: false,
+      useVoiceProcessing: false,
       ...config,
     });
   },
