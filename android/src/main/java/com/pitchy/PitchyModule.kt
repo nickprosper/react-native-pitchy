@@ -27,6 +27,8 @@ class PitchyModule(reactContext: ReactApplicationContext) :
   private var sampleRate: Int = 44100
   private var minVolume: Double = 0.0
   private var bufferSize: Int = 0
+  private val maxSliceDurationSeconds = 20
+  private val maxFullRecordingDurationSeconds = 300
 
   private var sliceBuffer = mutableListOf<Short>()
   private var fullRecordingBuffer = mutableListOf<Short>()
@@ -95,6 +97,9 @@ class PitchyModule(reactContext: ReactApplicationContext) :
       }
 
       isPaused = true
+      synchronized(this) {
+        sliceBuffer.clear()
+      }
       promise.resolve(true)
   }
 
@@ -220,6 +225,11 @@ class PitchyModule(reactContext: ReactApplicationContext) :
                           fullRecordingBuffer.add(buffer[i])
                         }
                     }
+
+                    trimBuffer(sliceBuffer, maxSliceBufferSamples())
+                    if (recordFullAudio) {
+                      trimBuffer(fullRecordingBuffer, maxFullRecordingBufferSamples())
+                    }
                 }
             }
         }
@@ -246,6 +256,21 @@ class PitchyModule(reactContext: ReactApplicationContext) :
     val params: WritableMap = Arguments.createMap()
     params.putDouble("pitch", pitch)
     reactApplicationContext.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java).emit("onPitchDetected", params)
+  }
+
+  private fun maxSliceBufferSamples(): Int {
+    return sampleRate * maxSliceDurationSeconds
+  }
+
+  private fun maxFullRecordingBufferSamples(): Int {
+    return sampleRate * maxFullRecordingDurationSeconds
+  }
+
+  private fun trimBuffer(buffer: MutableList<Short>, maxSamples: Int) {
+    val overflow = buffer.size - maxSamples
+    if (overflow > 0) {
+      buffer.subList(0, overflow).clear()
+    }
   }
 
     private fun createWavFile(pcmData: ByteArray, sampleRate: Int, channels: Int, bitsPerSample: Int): ByteArray {
