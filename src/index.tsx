@@ -54,8 +54,16 @@ export type PitchySlice = {
   duration: number;
 };
 
+export type PitchyAudioSessionPreferences = {
+  mode?: 'default' | 'measurement' | 'voiceChat';
+  preferredSampleRate?: number;
+  preferredIOBufferDuration?: number;
+  preferredInputChannels?: number;
+  prefersSpeakerOutput?: boolean;
+};
+
 const Pitchy = {
-  init(config?: PitchyConfig) {
+  init(config?: PitchyConfig): Promise<void> {
     return PitchyNativeModule.init({
       bufferSize: 4096,
       minVolume: -60,
@@ -89,6 +97,12 @@ const Pitchy = {
   },
   resume(): Promise<void> {
     return PitchyNativeModule.resume();
+  },
+  applyAudioSessionPreferences(preferences: PitchyAudioSessionPreferences): Promise<void> {
+    if (typeof PitchyNativeModule.applyAudioSessionPreferences !== 'function') {
+      return Promise.resolve();
+    }
+    return PitchyNativeModule.applyAudioSessionPreferences(preferences ?? {});
   },
   addListener(callback: PitchyEventCallback) {
     return eventEmitter.addListener('onPitchDetected', callback);

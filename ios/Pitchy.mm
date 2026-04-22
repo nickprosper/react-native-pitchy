@@ -46,73 +46,61 @@ RCT_EXPORT_MODULE()
     return (NSUInteger)(sampleRate * kMaxFullRecordingDurationSeconds * sizeof(int16_t));
 }
 
+- (void)resetAudioEngine {
+    if (audioEngine) {
+        @try {
+            [[audioEngine inputNode] removeTapOnBus:0];
+        } @catch (__unused NSException *exception) {
+        }
+
+        [audioEngine stop];
+    }
+
+    audioEngine = nil;
+}
+
 #pragma mark - Initialisation
 
-RCT_EXPORT_METHOD(init:(NSDictionary *)config) {
+RCT_EXPORT_METHOD(init:(NSDictionary *)config
+                  resolver:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject) {
 #if TARGET_IPHONE_SIMULATOR
     RCTLogInfo(@"Pitchy module is not supported on the iOS simulator");
+    resolve(nil);
     return;
 #endif
 
-    if (!isInitialized) {
-        audioEngine = [[AVAudioEngine alloc] init];
+    if (isInitialized) {
+        resolve(nil);
+        return;
+    }
 
-        /* ---------- AVAudioSession ---------- */
-        AVAudioSession *session = [AVAudioSession sharedInstance];
-        NSError *error = nil;
+    [self resetAudioEngine];
+    audioEngine = [[AVAudioEngine alloc] init];
 
-        useVoiceProcessing = [config[@"useVoiceProcessing"] boolValue];
+    useVoiceProcessing = [config[@"useVoiceProcessing"] boolValue];
 
-        AVAudioSessionCategoryOptions options = AVAudioSessionCategoryOptionDefaultToSpeaker;
-        NSString *sessionMode = useVoiceProcessing ? AVAudioSessionModeVoiceChat : AVAudioSessionModeMeasurement;
+    /* ---------- Input format ---------- */
+    AVAudioInputNode *inputNode = [audioEngine inputNode];
+    AVAudioFormat *format = [inputNode inputFormatForBus:0];
 
-        [session setCategory:AVAudioSessionCategoryPlayAndRecord
-                       mode:sessionMode
-                    options:options
-                      error:&error];
-        if (error) {
-            RCTLogError(@"Error setting AVAudioSession category/mode: %@", error);
-        }
+    if (!format || format.sampleRate <= 0 || format.channelCount == 0) {
+        [self resetAudioEngine];
+        reject(@"invalid_input_format", @"Pitchy input format was invalid. Audio session may not be ready yet.", nil);
+        return;
+    }
 
-        if (useVoiceProcessing) {
-            if ([session respondsToSelector:@selector(setPreferredInputNumberOfChannels:error:)]) {
-                NSError *prefError = nil;
-                [session setPreferredInputNumberOfChannels:1 error:&prefError];
-                if (prefError) {
-                    RCTLogWarn(@"Pitchy: Unable to prefer mono input: %@", prefError);
-                }
-            }
-        }
+    sampleRate = format.sampleRate;
+    RCTLogInfo(@"Input format sampleRate: %f, channelCount: %u",
+               format.sampleRate, (unsigned int)format.channelCount);
 
-        double preferredSampleRate = useVoiceProcessing ? 48000 : 44100;
-        [session setPreferredSampleRate:preferredSampleRate error:&error];
-        if (error) {
-            RCTLogError(@"Error setting preferred sample rate: %@", error);
-        }
+    /* ---------- Params from JS ---------- */
+    minVolume       = [config[@"minVolume"]       doubleValue];
+    recordFullAudio = [config[@"recordFullAudio"] boolValue];
+    isPaused        = NO;
 
-        [session setPreferredIOBufferDuration:0.005 error:&error];
-        if (error) {
-            RCTLogWarn(@"Pitchy: Unable to set IO buffer duration: %@", error);
-        }
-        error = nil;
-
-        [session setActive:YES error:&error];
-        if (error) RCTLogError(@"Error activating AVAudioSession: %@", error);
-
-        /* ---------- Input format ---------- */
-        AVAudioInputNode *inputNode = [audioEngine inputNode];
-        AVAudioFormat *format = [inputNode inputFormatForBus:0];
-
-        sampleRate = format.sampleRate > 0 ? format.sampleRate : 44100;
-        RCTLogInfo(@"Input format sampleRate: %f, channelCount: %u",
-                   format.sampleRate, (unsigned int)format.channelCount);
-
-        /* ---------- Params from JS ---------- */
-        minVolume       = [config[@"minVolume"]       doubleValue];
-        recordFullAudio = [config[@"recordFullAudio"] boolValue];
-        isPaused        = NO;
-
-        /* ---------- Tap for pitch + capture ---------- */
+    /* ---------- Tap for pitch + capture ---------- */
+    @try {
         [inputNode installTapOnBus:0
                         bufferSize:[config[@"bufferSize"] unsignedIntValue]
                             format:format
@@ -149,9 +137,14 @@ RCT_EXPORT_METHOD(init:(NSDictionary *)config) {
                 }
             }
         }];
-
-        isInitialized = YES;
+    } @catch (NSException *exception) {
+        [self resetAudioEngine];
+        reject(@"tap_install_error", exception.reason, nil);
+        return;
     }
+
+    isInitialized = YES;
+    resolve(nil);
 }
 
 #pragma mark - Recording control
@@ -172,6 +165,17 @@ RCT_EXPORT_METHOD(start:(RCTPromiseResolveBlock)resolve
         return;
     }
 
+    AVAudioInputNode *inputNode = [audioEngine inputNode];
+    AVAudioFormat *format = [inputNode inputFormatForBus:0];
+    if (!format || format.sampleRate <= 0 || format.channelCount == 0) {
+        isInitialized = NO;
+        [self resetAudioEngine];
+        reject(@"invalid_input_format", @"Pitchy input format became invalid before recording started.", nil);
+        return;
+    }
+
+    sampleRate = format.sampleRate > 0 ? format.sampleRate : sampleRate;
+
     audioBuffer   = [NSMutableData data];
     fullRecording = [NSMutableData data];
     isPaused      = NO;
@@ -184,6 +188,95 @@ RCT_EXPORT_METHOD(start:(RCTPromiseResolveBlock)resolve
         isRecording = YES;
         resolve(@(YES));
     }
+}
+
+RCT_EXPORT_METHOD(applyAudioSessionPreferences:(NSDictionary *)preferences
+                  resolver:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject) {
+    AVAudioSession *session = [AVAudioSession sharedInstance];
+    NSError *error = nil;
+    BOOL prefersSpeakerOutput = [preferences[@"prefersSpeakerOutput"] boolValue];
+    NSString *requestedMode = nil;
+
+    NSString *mode = preferences[@"mode"];
+    if ([mode isKindOfClass:[NSString class]]) {
+        requestedMode = mode;
+        NSString *sessionMode = AVAudioSessionModeDefault;
+        if ([mode isEqualToString:@"voiceChat"]) {
+            sessionMode = AVAudioSessionModeVoiceChat;
+        } else if ([mode isEqualToString:@"measurement"]) {
+            sessionMode = AVAudioSessionModeMeasurement;
+        }
+
+        [session setMode:sessionMode error:&error];
+        if (error) {
+            reject(@"audio_session_mode_error", @"Failed to set AVAudioSession mode", error);
+            return;
+        }
+    }
+
+    if (prefersSpeakerOutput) {
+        error = nil;
+        NSString *category = session.category.length > 0 ? session.category : AVAudioSessionCategoryPlayAndRecord;
+        AVAudioSessionCategoryOptions options = session.categoryOptions | AVAudioSessionCategoryOptionDefaultToSpeaker;
+        NSString *sessionMode = session.mode;
+
+        if ([requestedMode isEqualToString:@"voiceChat"]) {
+            sessionMode = AVAudioSessionModeVoiceChat;
+        } else if ([requestedMode isEqualToString:@"measurement"]) {
+            sessionMode = AVAudioSessionModeMeasurement;
+        } else if ([requestedMode isEqualToString:@"default"]) {
+            sessionMode = AVAudioSessionModeDefault;
+        }
+
+        [session setCategory:category mode:sessionMode options:options error:&error];
+        if (error) {
+            reject(@"audio_session_category_error", @"Failed to prefer speaker output", error);
+            return;
+        }
+
+        if ([session respondsToSelector:@selector(overrideOutputAudioPort:error:)]) {
+            error = nil;
+            [session overrideOutputAudioPort:AVAudioSessionPortOverrideSpeaker error:&error];
+            if (error) {
+                reject(@"audio_session_output_route_error", @"Failed to route audio to speaker", error);
+                return;
+            }
+        }
+    }
+
+    NSNumber *preferredSampleRate = preferences[@"preferredSampleRate"];
+    if ([preferredSampleRate isKindOfClass:[NSNumber class]]) {
+        error = nil;
+        [session setPreferredSampleRate:preferredSampleRate.doubleValue error:&error];
+        if (error) {
+            reject(@"audio_session_sample_rate_error", @"Failed to set preferred sample rate", error);
+            return;
+        }
+    }
+
+    NSNumber *preferredIOBufferDuration = preferences[@"preferredIOBufferDuration"];
+    if ([preferredIOBufferDuration isKindOfClass:[NSNumber class]]) {
+        error = nil;
+        [session setPreferredIOBufferDuration:preferredIOBufferDuration.doubleValue error:&error];
+        if (error) {
+            reject(@"audio_session_io_buffer_error", @"Failed to set preferred IO buffer duration", error);
+            return;
+        }
+    }
+
+    NSNumber *preferredInputChannels = preferences[@"preferredInputChannels"];
+    if ([preferredInputChannels isKindOfClass:[NSNumber class]] &&
+        [session respondsToSelector:@selector(setPreferredInputNumberOfChannels:error:)]) {
+        error = nil;
+        [session setPreferredInputNumberOfChannels:preferredInputChannels.intValue error:&error];
+        if (error) {
+            reject(@"audio_session_input_channels_error", @"Failed to set preferred input channels", error);
+            return;
+        }
+    }
+
+    resolve(nil);
 }
 
 RCT_EXPORT_METHOD(stop:(RCTPromiseResolveBlock)resolve

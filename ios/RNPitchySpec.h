@@ -14,7 +14,9 @@
 /**
  * Initialize the audio engine with the provided configuration.
  */
-- (void)init:(NSDictionary *)config;
+- (void)init:(NSDictionary *)config
+     resolver:(RCTPromiseResolveBlock)resolve
+     rejecter:(RCTPromiseRejectBlock)reject;
 
 /**
  * Start pitch detection.
@@ -45,5 +47,12 @@
  */
 - (void)isRecording:(RCTPromiseResolveBlock)resolve
             reject:(RCTPromiseRejectBlock)reject;
+
+/**
+ * Apply iOS audio session preferences managed by the host app.
+ */
+- (void)applyAudioSessionPreferences:(NSDictionary *)preferences
+                            resolver:(RCTPromiseResolveBlock)resolve
+                            rejecter:(RCTPromiseRejectBlock)reject;
 
 @end
