@@ -3,6 +3,9 @@
 #import <React/RCTLog.h>
 #import <vector>
 
+static const NSTimeInterval kMaxSliceDurationSeconds = 20.0;
+static const NSTimeInterval kMaxFullRecordingDurationSeconds = 300.0;
+
 @implementation Pitchy {
     AVAudioEngine *audioEngine;
     double sampleRate;
@@ -24,6 +27,23 @@ RCT_EXPORT_MODULE()
 
 - (NSArray<NSString *> *)supportedEvents {
     return @[@"onPitchDetected"];
+}
+
+- (void)trimBuffer:(NSMutableData *)buffer maxLength:(NSUInteger)maxLength {
+    if (!buffer || buffer.length <= maxLength) {
+        return;
+    }
+
+    NSUInteger overflow = buffer.length - maxLength;
+    [buffer replaceBytesInRange:NSMakeRange(0, overflow) withBytes:NULL length:0];
+}
+
+- (NSUInteger)maxSliceBufferLength {
+    return (NSUInteger)(sampleRate * kMaxSliceDurationSeconds * sizeof(float));
+}
+
+- (NSUInteger)maxFullRecordingLength {
+    return (NSUInteger)(sampleRate * kMaxFullRecordingDurationSeconds * sizeof(int16_t));
 }
 
 #pragma mark - Initialisation
@@ -109,6 +129,7 @@ RCT_EXPORT_METHOD(init:(NSDictionary *)config) {
                                                length:frames * sizeof(float)];
                 if (!self->audioBuffer) self->audioBuffer = [NSMutableData data];
                 [self->audioBuffer appendData:slice];
+                [self trimBuffer:self->audioBuffer maxLength:[self maxSliceBufferLength]];
 
                 /* ---- optional full recording (int16) ---- */
                 if (self->recordFullAudio) {
@@ -124,6 +145,7 @@ RCT_EXPORT_METHOD(init:(NSDictionary *)config) {
                         dst[i] = (int16_t)(s * 32767);
                     }
                     [self->fullRecording appendData:pcmBlock];
+                    [self trimBuffer:self->fullRecording maxLength:[self maxFullRecordingLength]];
                 }
             }
         }];
@@ -187,6 +209,7 @@ RCT_EXPORT_METHOD(pause:(RCTPromiseResolveBlock)resolve
         return;
     }
     isPaused = YES;
+    if (audioBuffer) [audioBuffer setLength:0];
     resolve(@(YES));
 }
 

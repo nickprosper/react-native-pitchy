@@ -27,6 +27,8 @@ class PitchyModule(reactContext: ReactApplicationContext) :
   private var sampleRate: Int = 44100
   private var minVolume: Double = 0.0
   private var bufferSize: Int = 0
+  private val maxSliceDurationSeconds = 20
+  private val maxFullRecordingDurationSeconds = 300
 
   private var sliceBuffer = mutableListOf<Short>()
   private var fullRecordingBuffer = mutableListOf<Short>()
@@ -95,6 +97,9 @@ class PitchyModule(reactContext: ReactApplicationContext) :
       }
 
       isPaused = true
+      synchronized(this) {
+        sliceBuffer.clear()
+      }
       promise.resolve(true)
   }
 
@@ -178,25 +183,35 @@ class PitchyModule(reactContext: ReactApplicationContext) :
     }
   }
 
-  private fun saveRecordingWav(filename: String, promise: Promise) {
+  private fun snapshotFullRecording(promise: Promise): ShortArray? {
     synchronized(this) {
-        if (fullRecordingBuffer.isEmpty()) {
-            promise.reject("no_data", "No recording data available")
-            return
-        }
+      if (fullRecordingBuffer.isEmpty()) {
+        promise.reject("no_data", "No recording data available")
+        return null
+      }
+
+      val snapshot = fullRecordingBuffer.toShortArray()
+      fullRecordingBuffer = mutableListOf()
+      return snapshot
+    }
+  }
+
+  private fun saveRecordingWav(filename: String, promise: Promise) {
+    val recordingSnapshot = snapshotFullRecording(promise) ?: return
+
+    thread(start = true, name = "PitchySaveWav") {
+      try {
         // Convert the full recording buffer (PCM 16-bit) to a byte array.
-        val pcmBytes = shortsToLittleEndianByteArray(fullRecordingBuffer)
+        val pcmBytes = shortsToLittleEndianByteArray(recordingSnapshot.asList())
         // Create a WAV file using the original sample rate, 1 channel, 16-bit PCM.
         val wavBytes = createWavFile(pcmBytes, sampleRate, 1, 16)
-        try {
-            val file = java.io.File(reactApplicationContext.filesDir, "$filename.wav")
-            file.writeBytes(wavBytes)
-            // Clear the full recording buffer after saving.
-            fullRecordingBuffer.clear()
-            promise.resolve(file.absolutePath)
-        } catch(e: Exception) {
-            promise.reject("save_error", "Failed to save recording", e)
-        }
+        val file = java.io.File(reactApplicationContext.filesDir, "$filename.wav")
+        file.writeBytes(wavBytes)
+
+        promise.resolve(file.absolutePath)
+      } catch(e: Exception) {
+        promise.reject("save_error", "Failed to save recording", e)
+      }
     }
   }
 
@@ -219,6 +234,11 @@ class PitchyModule(reactContext: ReactApplicationContext) :
                         if (recordFullAudio) {
                           fullRecordingBuffer.add(buffer[i])
                         }
+                    }
+
+                    trimBuffer(sliceBuffer, maxSliceBufferSamples())
+                    if (recordFullAudio) {
+                      trimBuffer(fullRecordingBuffer, maxFullRecordingBufferSamples())
                     }
                 }
             }
@@ -246,6 +266,21 @@ class PitchyModule(reactContext: ReactApplicationContext) :
     val params: WritableMap = Arguments.createMap()
     params.putDouble("pitch", pitch)
     reactApplicationContext.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java).emit("onPitchDetected", params)
+  }
+
+  private fun maxSliceBufferSamples(): Int {
+    return sampleRate * maxSliceDurationSeconds
+  }
+
+  private fun maxFullRecordingBufferSamples(): Int {
+    return sampleRate * maxFullRecordingDurationSeconds
+  }
+
+  private fun trimBuffer(buffer: MutableList<Short>, maxSamples: Int) {
+    val overflow = buffer.size - maxSamples
+    if (overflow > 0) {
+      buffer.subList(0, overflow).clear()
+    }
   }
 
     private fun createWavFile(pcmData: ByteArray, sampleRate: Int, channels: Int, bitsPerSample: Int): ByteArray {
@@ -307,11 +342,9 @@ class PitchyModule(reactContext: ReactApplicationContext) :
 
 
   private fun saveRecordingAac(filename: String, promise: Promise) {
-    synchronized(this) {
-      if (fullRecordingBuffer.isEmpty()) {
-        promise.reject("no_data", "No recording data available")
-        return
-      }
+    val recordingSnapshot = snapshotFullRecording(promise) ?: return
+
+    thread(start = true, name = "PitchySaveAac") {
       try {
         val mime = "audio/mp4a-latm"
         val bitRate = 96000
@@ -331,9 +364,9 @@ class PitchyModule(reactContext: ReactApplicationContext) :
         var trackIndex = -1
         var muxerStarted = false
 
-        val inputData = java.nio.ByteBuffer.allocateDirect(fullRecordingBuffer.size * 2)
+        val inputData = java.nio.ByteBuffer.allocateDirect(recordingSnapshot.size * 2)
         inputData.order(java.nio.ByteOrder.LITTLE_ENDIAN)
-        for (s in fullRecordingBuffer) inputData.putShort(s)
+        for (s in recordingSnapshot) inputData.putShort(s)
         inputData.flip()
 
         var presentationTimeUs = 0L
@@ -386,7 +419,6 @@ class PitchyModule(reactContext: ReactApplicationContext) :
         codec.stop(); codec.release()
         if (muxerStarted) muxer.stop()
         muxer.release()
-        fullRecordingBuffer.clear()
         promise.resolve(outputFile.absolutePath)
       } catch (e: Exception) {
         promise.reject("aac_save_error", "Failed to save AAC recording", e)
