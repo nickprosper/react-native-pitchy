@@ -45,6 +45,13 @@ export type PitchyConfig = {
    * @default false
    */
   useVoiceProcessing?: boolean;
+
+  /**
+   * iOS only.
+   * Whether Pitchy should manage the global audio session.
+   * @default true
+   * */
+  manageAudioSession?: boolean;
 };
 
 export type PitchyEventCallback = ({ pitch }: { pitch: number }) => void;
@@ -62,6 +69,7 @@ const Pitchy = {
       algorithm: 'ACF2+',
       recordFullAudio: false,
       useVoiceProcessing: false,
+      manageAudioSession: true,
       ...config,
     });
   },
