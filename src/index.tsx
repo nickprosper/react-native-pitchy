@@ -62,7 +62,7 @@ export type PitchySlice = {
 };
 
 const Pitchy = {
-  init(config?: PitchyConfig) {
+  init(config?: PitchyConfig): Promise<void> {
     return PitchyNativeModule.init({
       bufferSize: 4096,
       minVolume: -60,

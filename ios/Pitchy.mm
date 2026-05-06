@@ -48,9 +48,12 @@ RCT_EXPORT_MODULE()
 
 #pragma mark - Initialisation
 
-RCT_EXPORT_METHOD(init:(NSDictionary *)config) {
+RCT_EXPORT_METHOD(init:(NSDictionary *)config
+                  resolver:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject) {
 #if TARGET_IPHONE_SIMULATOR
     RCTLogInfo(@"Pitchy module is not supported on the iOS simulator");
+    reject(@"unsupported_platform", @"Pitchy module is not supported on the iOS simulator", nil);
     return;
 #endif
 
@@ -155,6 +158,7 @@ RCT_EXPORT_METHOD(init:(NSDictionary *)config) {
 
         isInitialized = YES;
     }
+    resolve(@(YES));
 }
 
 #pragma mark - Recording control

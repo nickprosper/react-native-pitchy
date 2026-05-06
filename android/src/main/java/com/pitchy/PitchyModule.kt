@@ -38,7 +38,8 @@ class PitchyModule(reactContext: ReactApplicationContext) :
   }
 
   @ReactMethod
-  fun init(config: ReadableMap) {
+  fun init(config: ReadableMap, promise: Promise) {
+    try {
       minVolume = config.getDouble("minVolume")
       bufferSize = config.getInt("bufferSize")
       recordFullAudio = if (config.hasKey("recordFullAudio")) config.getBoolean("recordFullAudio") else false
@@ -51,6 +52,11 @@ class PitchyModule(reactContext: ReactApplicationContext) :
        bufferSize)
 
       isInitialized = true
+      promise.resolve(true)
+    } catch(e: Exception) {
+      isInitialized = false
+      promise.reject("init_error", "Failed to initialize Pitchy", e)
+    }
   }
 
   @ReactMethod
