@@ -1,6 +1,7 @@
 #import "Pitchy.h"
 #import <AVFoundation/AVFoundation.h>
 #import <React/RCTLog.h>
+#import <UIKit/UIKit.h>
 #import <vector>
 
 static const NSTimeInterval kMaxSliceDurationSeconds = 20.0;
@@ -17,6 +18,7 @@ static const NSTimeInterval kMaxFullRecordingDurationSeconds = 300.0;
     BOOL isInitialized;
     BOOL recordFullAudio;   // opt-in full-session capture
     BOOL isPaused;          // soft pause without tearing down the engine
+    BOOL pausedForBackground;
 
     // Buffers
     NSMutableData *audioBuffer;   // float32 slice buffer (always kept)
@@ -24,6 +26,25 @@ static const NSTimeInterval kMaxFullRecordingDurationSeconds = 300.0;
 }
 
 RCT_EXPORT_MODULE()
+
+- (instancetype)init {
+    self = [super init];
+    if (self) {
+        [[NSNotificationCenter defaultCenter] addObserver:self
+                                                 selector:@selector(handleApplicationDidEnterBackground)
+                                                     name:UIApplicationDidEnterBackgroundNotification
+                                                   object:nil];
+        [[NSNotificationCenter defaultCenter] addObserver:self
+                                                 selector:@selector(handleApplicationWillEnterForeground)
+                                                     name:UIApplicationWillEnterForegroundNotification
+                                                   object:nil];
+    }
+    return self;
+}
+
+- (void)dealloc {
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
+}
 
 - (NSArray<NSString *> *)supportedEvents {
     return @[@"onPitchDetected"];
@@ -124,9 +145,9 @@ RCT_EXPORT_METHOD(init:(NSDictionary *)config
                             format:format
                              block:^(AVAudioPCMBuffer * _Nonnull buffer,
                                      AVAudioTime * _Nonnull when) {
-            [self detectPitch:buffer];
-
             if (self->isRecording && !self->isPaused) {
+                [self detectPitch:buffer];
+
                 float *channelData = buffer.floatChannelData[0];
                 AVAudioFrameCount frames = buffer.frameLength;
 
@@ -216,6 +237,7 @@ RCT_EXPORT_METHOD(pause:(RCTPromiseResolveBlock)resolve
         return;
     }
     isPaused = YES;
+    [audioEngine pause];
     if (audioBuffer) [audioBuffer setLength:0];
     resolve(@(YES));
 }
@@ -226,8 +248,48 @@ RCT_EXPORT_METHOD(resume:(RCTPromiseResolveBlock)resolve
         reject(@"not_recording", @"Not recording", nil);
         return;
     }
+
+    if (!audioEngine.isRunning) {
+        NSError *error = nil;
+        [audioEngine startAndReturnError:&error];
+        if (error) {
+            reject(@"resume_error", @"Failed to resume audio engine", error);
+            return;
+        }
+    }
+
     isPaused = NO;
     resolve(@(YES));
+}
+
+- (void)handleApplicationDidEnterBackground {
+    if (!isRecording || isPaused) {
+        pausedForBackground = NO;
+        return;
+    }
+
+    pausedForBackground = YES;
+    isPaused = YES;
+    [audioEngine pause];
+    if (audioBuffer) [audioBuffer setLength:0];
+    RCTLogInfo(@"Pitchy: paused pitch detection for background");
+}
+
+- (void)handleApplicationWillEnterForeground {
+    if (!isRecording || !pausedForBackground) {
+        return;
+    }
+
+    pausedForBackground = NO;
+    NSError *error = nil;
+    [audioEngine startAndReturnError:&error];
+    if (error) {
+        RCTLogError(@"Pitchy: failed to resume pitch detection after foreground: %@", error);
+        return;
+    }
+
+    isPaused = NO;
+    RCTLogInfo(@"Pitchy: resumed pitch detection after foreground");
 }
 
 #pragma mark - Pitch detection
