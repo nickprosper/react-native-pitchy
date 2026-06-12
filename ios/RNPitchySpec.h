@@ -14,7 +14,9 @@
 /**
  * Initialize the audio engine with the provided configuration.
  */
-- (void)init:(NSDictionary *)config;
+- (void)init:(NSDictionary *)config
+    resolver:(RCTPromiseResolveBlock)resolve
+    rejecter:(RCTPromiseRejectBlock)reject;
 
 /**
  * Start pitch detection.

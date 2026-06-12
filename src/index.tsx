@@ -45,6 +45,13 @@ export type PitchyConfig = {
    * @default false
    */
   useVoiceProcessing?: boolean;
+
+  /**
+   * iOS only.
+   * Whether Pitchy should manage the global audio session.
+   * @default true
+   * */
+  manageAudioSession?: boolean;
 };
 
 export type PitchyEventCallback = ({ pitch }: { pitch: number }) => void;
@@ -55,13 +62,14 @@ export type PitchySlice = {
 };
 
 const Pitchy = {
-  init(config?: PitchyConfig) {
+  init(config?: PitchyConfig): Promise<void> {
     return PitchyNativeModule.init({
       bufferSize: 4096,
       minVolume: -60,
       algorithm: 'ACF2+',
       recordFullAudio: false,
       useVoiceProcessing: false,
+      manageAudioSession: true,
       ...config,
     });
   },

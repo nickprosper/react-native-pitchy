@@ -48,56 +48,62 @@ RCT_EXPORT_MODULE()
 
 #pragma mark - Initialisation
 
-RCT_EXPORT_METHOD(init:(NSDictionary *)config) {
+RCT_EXPORT_METHOD(init:(NSDictionary *)config
+                  resolver:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject) {
 #if TARGET_IPHONE_SIMULATOR
     RCTLogInfo(@"Pitchy module is not supported on the iOS simulator");
+    reject(@"unsupported_platform", @"Pitchy module is not supported on the iOS simulator", nil);
     return;
 #endif
 
     if (!isInitialized) {
         audioEngine = [[AVAudioEngine alloc] init];
 
-        /* ---------- AVAudioSession ---------- */
-        AVAudioSession *session = [AVAudioSession sharedInstance];
-        NSError *error = nil;
-
         useVoiceProcessing = [config[@"useVoiceProcessing"] boolValue];
+        BOOL manageAudioSession = ![config[@"manageAudioSession"] isEqual:@NO];
 
-        AVAudioSessionCategoryOptions options = AVAudioSessionCategoryOptionDefaultToSpeaker;
-        NSString *sessionMode = useVoiceProcessing ? AVAudioSessionModeVoiceChat : AVAudioSessionModeMeasurement;
+        if (manageAudioSession) {
+            /* ---------- AVAudioSession ---------- */
+            AVAudioSession *session = [AVAudioSession sharedInstance];
+            NSError *error = nil;
 
-        [session setCategory:AVAudioSessionCategoryPlayAndRecord
-                       mode:sessionMode
-                    options:options
-                      error:&error];
-        if (error) {
-            RCTLogError(@"Error setting AVAudioSession category/mode: %@", error);
-        }
+            AVAudioSessionCategoryOptions options = AVAudioSessionCategoryOptionDefaultToSpeaker;
+            NSString *sessionMode = useVoiceProcessing ? AVAudioSessionModeVoiceChat : AVAudioSessionModeMeasurement;
 
-        if (useVoiceProcessing) {
-            if ([session respondsToSelector:@selector(setPreferredInputNumberOfChannels:error:)]) {
-                NSError *prefError = nil;
-                [session setPreferredInputNumberOfChannels:1 error:&prefError];
-                if (prefError) {
-                    RCTLogWarn(@"Pitchy: Unable to prefer mono input: %@", prefError);
+            [session setCategory:AVAudioSessionCategoryPlayAndRecord
+                           mode:sessionMode
+                        options:options
+                          error:&error];
+            if (error) {
+                RCTLogError(@"Error setting AVAudioSession category/mode: %@", error);
+            }
+
+            if (useVoiceProcessing) {
+                if ([session respondsToSelector:@selector(setPreferredInputNumberOfChannels:error:)]) {
+                    NSError *prefError = nil;
+                    [session setPreferredInputNumberOfChannels:1 error:&prefError];
+                    if (prefError) {
+                        RCTLogWarn(@"Pitchy: Unable to prefer mono input: %@", prefError);
+                    }
                 }
             }
-        }
 
-        double preferredSampleRate = useVoiceProcessing ? 48000 : 44100;
-        [session setPreferredSampleRate:preferredSampleRate error:&error];
-        if (error) {
-            RCTLogError(@"Error setting preferred sample rate: %@", error);
-        }
+            double preferredSampleRate = useVoiceProcessing ? 48000 : 44100;
+            [session setPreferredSampleRate:preferredSampleRate error:&error];
+            if (error) {
+                RCTLogError(@"Error setting preferred sample rate: %@", error);
+            }
 
-        [session setPreferredIOBufferDuration:0.005 error:&error];
-        if (error) {
-            RCTLogWarn(@"Pitchy: Unable to set IO buffer duration: %@", error);
-        }
-        error = nil;
+            [session setPreferredIOBufferDuration:0.005 error:&error];
+            if (error) {
+                RCTLogWarn(@"Pitchy: Unable to set IO buffer duration: %@", error);
+            }
+            error = nil;
 
-        [session setActive:YES error:&error];
-        if (error) RCTLogError(@"Error activating AVAudioSession: %@", error);
+            [session setActive:YES error:&error];
+            if (error) RCTLogError(@"Error activating AVAudioSession: %@", error);
+        }
 
         /* ---------- Input format ---------- */
         AVAudioInputNode *inputNode = [audioEngine inputNode];
@@ -152,6 +158,7 @@ RCT_EXPORT_METHOD(init:(NSDictionary *)config) {
 
         isInitialized = YES;
     }
+    resolve(@(YES));
 }
 
 #pragma mark - Recording control
