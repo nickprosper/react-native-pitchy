@@ -9,6 +9,11 @@ add_library(react-native-pitchy            SHARED
             cpp-adapter.cpp
 )
 
+target_link_options(react-native-pitchy PRIVATE
+            "-Wl,-z,max-page-size=16384"
+            "-Wl,-z,common-page-size=16384"
+)
+
 # Specifies a path to native header files.
 include_directories(
             ../cpp
