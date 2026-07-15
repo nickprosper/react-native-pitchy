@@ -561,4 +561,12 @@ RCT_EXPORT_METHOD(saveRecordingWithOptions:(NSString *)uuid
     [self saveRecording:uuid resolver:resolve rejecter:reject];
 }
 
+#ifdef RCT_NEW_ARCH_ENABLED
+- (std::shared_ptr<facebook::react::TurboModule>)getTurboModule:
+    (const facebook::react::ObjCTurboModule::InitParams &)params
+{
+    return std::make_shared<facebook::react::NativePitchySpecJSI>(params);
+}
+#endif
+
 @end
