@@ -38,7 +38,13 @@ export type PitchyConfig = {
   manageAudioSession?: boolean;
 };
 
-export type PitchyEventCallback = ({ pitch }: { pitch: number }) => void;
+export type PitchyInputEvent = {
+  pitch: number;
+  /** RMS level in dBFS, independent of pitch. Absent in older native builds. */
+  volumeDb?: number;
+};
+
+export type PitchyEventCallback = (event: PitchyInputEvent) => void;
 
 export type PitchySlice = {
   audio: string;

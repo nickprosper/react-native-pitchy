@@ -3,6 +3,7 @@
 #import <React/RCTLog.h>
 #import <UIKit/UIKit.h>
 #import <vector>
+#include <cmath>
 
 static const NSTimeInterval kMaxSliceDurationSeconds = 20.0;
 static const NSTimeInterval kMaxFullRecordingDurationSeconds = 300.0;
@@ -318,10 +319,22 @@ RCT_EXPORT_METHOD(resume:(RCTPromiseResolveBlock)resolve
         float *channelData = buffer.floatChannelData[0];
         std::vector<double> buf(channelData, channelData + buffer.frameLength);
 
+        // Measure the normalized PCM independently of whether it has a detectable pitch.
+        double sumSquares = 0;
+        for (double sample : buf) {
+            sumSquares += sample * sample;
+        }
+
+        double meanSquare = buf.empty() ? 0 : sumSquares / buf.size();
+        double volumeDb = meanSquare > 1e-12 ? 10 * std::log10(meanSquare) : -120;
+
         double pitch = pitchy::autoCorrelate(buf, self->sampleRate, self->minVolume);
 
         dispatch_async(dispatch_get_main_queue(), ^{
-            [self sendEventWithName:@"onPitchDetected" body:@{ @"pitch": @(pitch) }];
+            [self sendEventWithName:@"onPitchDetected" body:@{
+                @"pitch": @(pitch),
+                @"volumeDb": @(volumeDb)
+            }];
         });
     });
 }

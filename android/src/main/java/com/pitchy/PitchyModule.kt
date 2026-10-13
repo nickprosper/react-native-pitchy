@@ -12,6 +12,7 @@ import android.media.MediaCodecInfo
 import android.media.MediaMuxer
 
 import kotlin.concurrent.thread
+import kotlin.math.log10
 
 class PitchyModule(reactContext: ReactApplicationContext) :
   ReactContextBaseJavaModule(reactContext) {
@@ -268,9 +269,19 @@ class PitchyModule(reactContext: ReactApplicationContext) :
   private external fun nativeAutoCorrelate(buffer: ShortArray, sampleRate: Int, minVolume: Double): Double
 
   private fun detectPitch(buffer: ShortArray){
+    // Match iOS dBFS: normalize signed 16-bit PCM before measuring its energy.
+    var sumSquares = 0.0
+    for (sample in buffer) {
+      val normalized = sample.toDouble() / 32768.0
+      sumSquares += normalized * normalized
+    }
+
+    val meanSquare = if (buffer.isEmpty()) 0.0 else sumSquares / buffer.size
+    val volumeDb = if (meanSquare > 1e-12) 10.0 * log10(meanSquare) else -120.0
     val pitch = nativeAutoCorrelate(buffer, sampleRate, minVolume)
     val params: WritableMap = Arguments.createMap()
     params.putDouble("pitch", pitch)
+    params.putDouble("volumeDb", volumeDb)
     reactApplicationContext.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java).emit("onPitchDetected", params)
   }
 
