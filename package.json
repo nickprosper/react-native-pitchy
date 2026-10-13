@@ -3,12 +3,14 @@
   "version": "1.0.0",
   "description": "A simple pitch detection module for React Native",
   "source": "./src/index.tsx",
+  "react-native": "./src/index.tsx",
   "main": "./lib/commonjs/index.js",
   "module": "./lib/module/index.js",
   "types": "./lib/typescript/src/index.d.ts",
   "exports": {
     ".": {
       "types": "./lib/typescript/src/index.d.ts",
+      "react-native": "./src/index.tsx",
       "import": "./lib/module/index.js",
       "require": "./lib/commonjs/index.js"
     }
@@ -88,6 +90,14 @@
   "peerDependencies": {
     "react": "*",
     "react-native": "*"
+  },
+  "codegenConfig": {
+    "name": "RNPitchySpec",
+    "type": "modules",
+    "jsSrcsDir": "src",
+    "android": {
+      "javaPackageName": "com.pitchy"
+    }
   },
   "workspaces": [
     "example"

@@ -1,21 +1,5 @@
-import { NativeModules, NativeEventEmitter, Platform } from 'react-native';
-
-const LINKING_ERROR =
-  `The package 'react-native-pitchy' doesn't seem to be linked. Make sure: \n\n` +
-  Platform.select({ ios: "- You have run 'pod install'\n", default: '' }) +
-  '- You rebuilt the app after installing the package\n' +
-  '- You are not using Expo Go\n';
-
-const PitchyNativeModule = NativeModules.Pitchy
-  ? NativeModules.Pitchy
-  : new Proxy(
-      {},
-      {
-        get() {
-          throw new Error(LINKING_ERROR);
-        },
-      }
-    );
+import { NativeEventEmitter } from 'react-native';
+import PitchyNativeModule from './NativePitchy';
 
 const eventEmitter = new NativeEventEmitter(PitchyNativeModule);
 
@@ -54,7 +38,13 @@ export type PitchyConfig = {
   manageAudioSession?: boolean;
 };
 
-export type PitchyEventCallback = ({ pitch }: { pitch: number }) => void;
+export type PitchyInputEvent = {
+  pitch: number;
+  /** RMS level in dBFS, independent of pitch. Absent in older native builds. */
+  volumeDb?: number;
+};
+
+export type PitchyEventCallback = (event: PitchyInputEvent) => void;
 
 export type PitchySlice = {
   audio: string;
@@ -71,13 +61,13 @@ const Pitchy = {
       useVoiceProcessing: false,
       manageAudioSession: true,
       ...config,
-    });
+    }).then(() => undefined);
   },
   start(): Promise<void> {
-    return PitchyNativeModule.start();
+    return PitchyNativeModule.start().then(() => undefined);
   },
   stop(): Promise<void> {
-    return PitchyNativeModule.stop();
+    return PitchyNativeModule.stop().then(() => undefined);
   },
   slice(): Promise<PitchySlice> {
     return PitchyNativeModule.slice();
@@ -93,10 +83,10 @@ const Pitchy = {
     return PitchyNativeModule.isRecording();
   },
   pause(): Promise<void> {
-    return PitchyNativeModule.pause();
+    return PitchyNativeModule.pause().then(() => undefined);
   },
   resume(): Promise<void> {
-    return PitchyNativeModule.resume();
+    return PitchyNativeModule.resume().then(() => undefined);
   },
   addListener(callback: PitchyEventCallback) {
     return eventEmitter.addListener('onPitchDetected', callback);

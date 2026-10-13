@@ -3,6 +3,7 @@
 #import <React/RCTLog.h>
 #import <UIKit/UIKit.h>
 #import <vector>
+#include <cmath>
 
 static const NSTimeInterval kMaxSliceDurationSeconds = 20.0;
 static const NSTimeInterval kMaxFullRecordingDurationSeconds = 300.0;
@@ -69,9 +70,16 @@ RCT_EXPORT_MODULE()
 
 #pragma mark - Initialisation
 
+#ifdef RCT_NEW_ARCH_ENABLED
+RCT_EXPORT_METHOD(init:(JS::NativePitchy::PitchyConfig &)config
+                  resolve:(RCTPromiseResolveBlock)resolve
+                  reject:(RCTPromiseRejectBlock)reject)
+#else
 RCT_EXPORT_METHOD(init:(NSDictionary *)config
-                  resolver:(RCTPromiseResolveBlock)resolve
-                  rejecter:(RCTPromiseRejectBlock)reject) {
+                  resolve:(RCTPromiseResolveBlock)resolve
+                  reject:(RCTPromiseRejectBlock)reject)
+#endif
+{
 #if TARGET_IPHONE_SIMULATOR
     RCTLogInfo(@"Pitchy module is not supported on the iOS simulator");
     reject(@"unsupported_platform", @"Pitchy module is not supported on the iOS simulator", nil);
@@ -81,8 +89,13 @@ RCT_EXPORT_METHOD(init:(NSDictionary *)config
     if (!isInitialized) {
         audioEngine = [[AVAudioEngine alloc] init];
 
+#ifdef RCT_NEW_ARCH_ENABLED
+        useVoiceProcessing = config.useVoiceProcessing();
+        BOOL manageAudioSession = config.manageAudioSession();
+#else
         useVoiceProcessing = [config[@"useVoiceProcessing"] boolValue];
         BOOL manageAudioSession = ![config[@"manageAudioSession"] isEqual:@NO];
+#endif
 
         if (manageAudioSession) {
             /* ---------- AVAudioSession ---------- */
@@ -135,13 +148,20 @@ RCT_EXPORT_METHOD(init:(NSDictionary *)config
                    format.sampleRate, (unsigned int)format.channelCount);
 
         /* ---------- Params from JS ---------- */
+#ifdef RCT_NEW_ARCH_ENABLED
+        minVolume       = config.minVolume();
+        recordFullAudio = config.recordFullAudio();
+        AVAudioFrameCount configuredBufferSize = (AVAudioFrameCount)config.bufferSize();
+#else
         minVolume       = [config[@"minVolume"]       doubleValue];
         recordFullAudio = [config[@"recordFullAudio"] boolValue];
+        AVAudioFrameCount configuredBufferSize = [config[@"bufferSize"] unsignedIntValue];
+#endif
         isPaused        = NO;
 
         /* ---------- Tap for pitch + capture ---------- */
         [inputNode installTapOnBus:0
-                        bufferSize:[config[@"bufferSize"] unsignedIntValue]
+                        bufferSize:configuredBufferSize
                             format:format
                              block:^(AVAudioPCMBuffer * _Nonnull buffer,
                                      AVAudioTime * _Nonnull when) {
@@ -299,10 +319,22 @@ RCT_EXPORT_METHOD(resume:(RCTPromiseResolveBlock)resolve
         float *channelData = buffer.floatChannelData[0];
         std::vector<double> buf(channelData, channelData + buffer.frameLength);
 
+        // Measure the normalized PCM independently of whether it has a detectable pitch.
+        double sumSquares = 0;
+        for (double sample : buf) {
+            sumSquares += sample * sample;
+        }
+
+        double meanSquare = buf.empty() ? 0 : sumSquares / buf.size();
+        double volumeDb = meanSquare > 1e-12 ? 10 * std::log10(meanSquare) : -120;
+
         double pitch = pitchy::autoCorrelate(buf, self->sampleRate, self->minVolume);
 
         dispatch_async(dispatch_get_main_queue(), ^{
-            [self sendEventWithName:@"onPitchDetected" body:@{ @"pitch": @(pitch) }];
+            [self sendEventWithName:@"onPitchDetected" body:@{
+                @"pitch": @(pitch),
+                @"volumeDb": @(volumeDb)
+            }];
         });
     });
 }
@@ -443,8 +475,8 @@ RCT_EXPORT_METHOD(slice:(RCTPromiseResolveBlock)resolve
 
 
 RCT_EXPORT_METHOD(saveRecording:(NSString *)uuid
-                  resolver:(RCTPromiseResolveBlock)resolve
-                  rejecter:(RCTPromiseRejectBlock)reject) {
+                  resolve:(RCTPromiseResolveBlock)resolve
+                  reject:(RCTPromiseRejectBlock)reject) {
     if (!fullRecording || fullRecording.length == 0) {
         reject(@"no_data", @"No recording data available", nil);
         return;
@@ -498,8 +530,8 @@ RCT_EXPORT_METHOD(saveRecording:(NSString *)uuid
 // New API with options for future formats (e.g., mp3). Currently falls back to WAV.
 RCT_EXPORT_METHOD(saveRecordingWithOptions:(NSString *)uuid
                   options:(NSDictionary *)options
-                  resolver:(RCTPromiseResolveBlock)resolve
-                  rejecter:(RCTPromiseRejectBlock)reject)
+                  resolve:(RCTPromiseResolveBlock)resolve
+                  reject:(RCTPromiseRejectBlock)reject)
 {
     NSString *format = [options objectForKey:@"format"];
     if (format && [[format lowercaseString] isEqualToString:@"aac"]) {
@@ -558,7 +590,15 @@ RCT_EXPORT_METHOD(saveRecordingWithOptions:(NSString *)uuid
         }
     }
     // Default: WAV
-    [self saveRecording:uuid resolver:resolve rejecter:reject];
+    [self saveRecording:uuid resolve:resolve reject:reject];
 }
+
+#ifdef RCT_NEW_ARCH_ENABLED
+- (std::shared_ptr<facebook::react::TurboModule>)getTurboModule:
+    (const facebook::react::ObjCTurboModule::InitParams &)params
+{
+    return std::make_shared<facebook::react::NativePitchySpecJSI>(params);
+}
+#endif
 
 @end
